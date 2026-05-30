@@ -1,0 +1,66 @@
+# Auto-bootstrapped from the template repo (azure-identity-app-template).
+# Triggered when Terraform commits the per-project values.yaml.
+#
+# Uses Workload Identity Federation (OIDC). No client_secret anywhere — GitHub
+# mints a signed JWT, Azure validates it against the federated credential, we
+# get a short-lived access token. Then helm upgrade --install with values.yaml.
+
+name: Deploy to AKS (Helm + Gateway API)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - values.yaml
+      - chart/**
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+
+# id-token: write is REQUIRED for OIDC. Without it the runner cannot mint
+# the JWT that azure/login exchanges for an access token.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # OIDC subject becomes repo:{org}/{repo}:environment:production.
+    # The project UAMI's FIC must match (subject_type=environment, value=production).
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC, no secret)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # kubelogin converts the kubeconfig token; pin a version (no GH API call).
+      - name: Install kubelogin
+        uses: azure/use-kubelogin@v1
+        with:
+          kubelogin-version: v0.2.17
+
+      - name: Set up kubeconfig for AKS
+        uses: azure/aks-set-context@v4
+        with:
+          cluster-name: ${{ vars.AKS_CLUSTER_NAME }}
+          resource-group: ${{ vars.AKS_RESOURCE_GROUP }}
+          # admin: false uses the Entra-issued token (which carries Azure RBAC
+          # on the namespace), NOT the cluster admin cert.
+          admin: false
+          use-kubelogin: true
+
+      - name: Helm upgrade --install
+        run: |
+          helm upgrade --install "${{ vars.PROJECT_NAME }}" ./chart \
+            --namespace "${{ vars.K8S_NAMESPACE }}" \
+            --values ./values.yaml \
+            --wait --timeout 180s
+
+      - name: Show resulting endpoints
+        run: |
+          kubectl get -n "${{ vars.K8S_NAMESPACE }}" deployment,svc,httproute
