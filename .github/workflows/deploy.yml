@@ -25,9 +25,21 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Skip if AZURE_CLIENT_ID isn't set yet — protects against the very first
+    # push when a repo is materialized from template (env vars may not yet
+    # be propagated). Terraform's values.yaml commit triggers this again with
+    # vars set and runs normally.
+    if: vars.AZURE_CLIENT_ID != ''
     # OIDC subject becomes repo:{org}/{repo}:environment:production.
     # The project UAMI's FIC must match (subject_type=environment, value=production).
     environment: production
+    # Keep kubeconfig in runner.temp so we can wipe it explicitly in cleanup.
+    # Default location ~/.kube/config persists across steps and (on self-hosted
+    # runners) across jobs — best to isolate it.
+    env:
+      KUBECONFIG: ${{ runner.temp }}/kubeconfig
+
     steps:
       - uses: actions/checkout@v4
 
@@ -64,3 +76,50 @@ jobs:
       - name: Show resulting endpoints
         run: |
           kubectl get -n "${{ vars.K8S_NAMESPACE }}" deployment,svc,httproute
+
+      # Helm --wait confirms pods are Ready, but Gateway API attachment +
+      # Envoy reconcile + Azure LB programming can still need a few seconds.
+      # Retry until the URL responds with our expected body, then fail loudly
+      # with diagnostics if it never does.
+      - name: Smoke test — verify the app responds
+        run: |
+          set -euo pipefail
+          HOSTNAME="$(yq '.hostname' values.yaml)"
+          URL="http://${HOSTNAME}"
+          echo "Probing ${URL} ..."
+          for i in $(seq 1 30); do
+            CODE=$(curl -sS -o /tmp/body -w "%{http_code}" -m 5 "${URL}" || echo "000")
+            if [ "${CODE}" = "200" ] && grep -q "Zero secrets" /tmp/body; then
+              echo ""
+              echo "============================================"
+              echo "  Deployment successful!"
+              echo "  ${URL}"
+              echo "============================================"
+              exit 0
+            fi
+            echo "Attempt ${i}/30: HTTP ${CODE} (waiting for HTTPRoute + Envoy reconcile)..."
+            sleep 5
+          done
+          echo ""
+          echo "FAILED — ${URL} did not return 200 with expected body in 2.5 minutes."
+          echo "Last HTTP code: ${CODE}"
+          echo "---- curl -v ----"
+          curl -v "${URL}" || true
+          echo "---- HTTPRoute ----"
+          kubectl -n "${{ vars.K8S_NAMESPACE }}" describe httproute || true
+          echo "---- Pods ----"
+          kubectl -n "${{ vars.K8S_NAMESPACE }}" describe pod || true
+          exit 1
+
+      # Defense in depth: clean credentials even on failure. GitHub-hosted
+      # runners are ephemeral, but the same workflow shape protects self-hosted
+      # runners (and any future state-persisting setup) where credentials
+      # leaking across jobs would be a real problem.
+      - name: Clean up kubeconfig + Azure session
+        if: always()
+        run: |
+          rm -f "${KUBECONFIG}"           2>/dev/null || true
+          rm -f "${HOME}/.kube/config"    2>/dev/null || true
+          az logout                        2>/dev/null || true
+          az account clear                 2>/dev/null || true
+          echo "Credentials wiped."
