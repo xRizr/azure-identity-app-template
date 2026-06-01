@@ -34,11 +34,13 @@ jobs:
     # OIDC subject becomes repo:{org}/{repo}:environment:production.
     # The project UAMI's FIC must match (subject_type=environment, value=production).
     environment: production
-    # Keep kubeconfig in runner.temp so we can wipe it explicitly in cleanup.
+    # Keep kubeconfig in the workspace so we can wipe it explicitly in cleanup.
     # Default location ~/.kube/config persists across steps and (on self-hosted
-    # runners) across jobs — best to isolate it.
+    # runners) across jobs — best to isolate it. NOTE: the `runner` context is
+    # NOT available in a job-level env block (only inside steps), so use
+    # `github.workspace` here — `runner.temp` would fail workflow validation.
     env:
-      KUBECONFIG: ${{ runner.temp }}/kubeconfig
+      KUBECONFIG: ${{ github.workspace }}/kubeconfig
 
     steps:
       - uses: actions/checkout@v4
