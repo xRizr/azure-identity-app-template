@@ -26,11 +26,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Skip if AZURE_CLIENT_ID isn't set yet — protects against the very first
-    # push when a repo is materialized from template (env vars may not yet
-    # be propagated). Terraform's values.yaml commit triggers this again with
     # vars set and runs normally.
-    if: vars.AZURE_CLIENT_ID != ''
     # OIDC subject becomes repo:{org}/{repo}:environment:production.
     # The project UAMI's FIC must match (subject_type=environment, value=production).
     environment: production
