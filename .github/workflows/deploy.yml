@@ -41,6 +41,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # [DEMO — slajd 11] Pokazuje audience SKĄD się bierze JWT i co w nim jest.
+      # ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN są wstrzykiwane do runnera per-job
+      # przez GitHub schedulera (analogia: IMDS dla Azure VM). Bearer token
+      # jest ephemeralny — żyje tyle co job. azure/login w następnym kroku
+      # robi DOKŁADNIE to samo wywołanie pod spodem i wymienia JWT na token
+      # Azure. Można zostawić jako stały educational artifact albo skasować
+      # po talku.
+      - name: "[DEMO] OIDC env-y + zdekodowany JWT (slajd 11)"
+        run: |
+          set -euo pipefail
+          echo "::group::1) Env-y wstrzyknięte do runnera przez GitHub schedulera"
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL    = ${ACTIONS_ID_TOKEN_REQUEST_URL}"
+          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN  = (length=${#ACTIONS_ID_TOKEN_REQUEST_TOKEN}, ephemeralny, masowany w logach)"
+          echo "::endgroup::"
+
+          echo "::group::2) GET \$URL&audience=... z bearer \$TOKEN  ->  JWT"
+          JWT=$(curl -sS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            -H "Accept: application/json; api-version=2.0" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
+            | jq -r '.value')
+          if [ -z "${JWT}" ] || [ "${JWT}" = "null" ]; then
+            echo "ERROR: nie udało się pobrać JWT od GitHub OIDC issuera"
+            exit 1
+          fi
+          echo "::add-mask::${JWT}"
+          echo "JWT length: ${#JWT} chars · podpisany kluczem token.actions.githubusercontent.com"
+          echo "::endgroup::"
+
+          echo "::group::3) Zdekodowany payload (TO Entra widzi i waliduje wg FIC)"
+          echo "${JWT}" | python3 -c "$(cat <<'PY'
+          import sys, json, base64
+          parts = sys.stdin.read().strip().split('.')
+          payload = parts[1] + '=' * (-len(parts[1]) % 4)
+          data = json.loads(base64.urlsafe_b64decode(payload))
+          print(json.dumps(data, indent=2, ensure_ascii=False))
+          PY
+          )"
+          echo "::endgroup::"
+
+          echo "-> azure/login w następnym kroku wyśle TEN JWT do Entry jako client_assertion."
+          echo "   FIC zwaliduje iss/sub/aud/podpis (slajd 11). Jak gra -> token Azure."
+
       - name: Azure login (OIDC, no secret)
         uses: azure/login@v2
         with:
