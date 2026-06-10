@@ -1,10 +1,3 @@
-# Auto-bootstrapped from the template repo (azure-identity-app-template).
-# Triggered when Terraform commits the per-project values.yaml.
-#
-# Uses Workload Identity Federation (OIDC). No client_secret anywhere — GitHub
-# mints a signed JWT, Azure validates it against the federated credential, we
-# get a short-lived access token. Then helm upgrade --install with values.yaml.
-
 name: Deploy to AKS (Helm + Gateway API)
 
 on:
@@ -16,8 +9,6 @@ on:
       - .github/workflows/deploy.yml
   workflow_dispatch:
 
-# id-token: write is REQUIRED for OIDC. Without it the runner cannot mint
-# the JWT that azure/login exchanges for an access token.
 permissions:
   id-token: write
   contents: read
@@ -26,28 +17,13 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # vars set and runs normally.
-    # OIDC subject becomes repo:{org}/{repo}:environment:production.
-    # The project UAMI's FIC must match (subject_type=environment, value=production).
     environment: production
-    # Keep kubeconfig in the workspace so we can wipe it explicitly in cleanup.
-    # Default location ~/.kube/config persists across steps and (on self-hosted
-    # runners) across jobs — best to isolate it. NOTE: the `runner` context is
-    # NOT available in a job-level env block (only inside steps), so use
-    # `github.workspace` here — `runner.temp` would fail workflow validation.
     env:
       KUBECONFIG: ${{ github.workspace }}/kubeconfig
 
     steps:
       - uses: actions/checkout@v4
 
-      # [DEMO — slajd 11] Pokazuje audience SKĄD się bierze JWT i co w nim jest.
-      # ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN są wstrzykiwane do runnera per-job
-      # przez GitHub schedulera (analogia: IMDS dla Azure VM). Bearer token
-      # jest ephemeralny — żyje tyle co job. azure/login w następnym kroku
-      # robi DOKŁADNIE to samo wywołanie pod spodem i wymienia JWT na token
-      # Azure. Można zostawić jako stały educational artifact albo skasować
-      # po talku.
       - name: "[DEMO] OIDC env-y + zdekodowany JWT (slajd 11)"
         run: |
           set -euo pipefail
@@ -91,7 +67,6 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      # kubelogin converts the kubeconfig token; pin a version (no GH API call).
       - name: Install kubelogin
         uses: azure/use-kubelogin@v1
         with:
@@ -102,8 +77,6 @@ jobs:
         with:
           cluster-name: ${{ vars.AKS_CLUSTER_NAME }}
           resource-group: ${{ vars.AKS_RESOURCE_GROUP }}
-          # admin: false uses the Entra-issued token (which carries Azure RBAC
-          # on the namespace), NOT the cluster admin cert.
           admin: false
           use-kubelogin: true
 
@@ -118,10 +91,6 @@ jobs:
         run: |
           kubectl get -n "${{ vars.K8S_NAMESPACE }}" deployment,svc,httproute
 
-      # Helm --wait confirms pods are Ready, but Gateway API attachment +
-      # Envoy reconcile + Azure LB programming can still need a few seconds.
-      # Retry until the URL responds with our expected body, then fail loudly
-      # with diagnostics if it never does.
       - name: Smoke test — verify the app responds
         run: |
           set -euo pipefail
@@ -152,10 +121,6 @@ jobs:
           kubectl -n "${{ vars.K8S_NAMESPACE }}" describe pod || true
           exit 1
 
-      # Defense in depth: clean credentials even on failure. GitHub-hosted
-      # runners are ephemeral, but the same workflow shape protects self-hosted
-      # runners (and any future state-persisting setup) where credentials
-      # leaking across jobs would be a real problem.
       - name: Clean up kubeconfig + Azure session
         if: always()
         run: |
